@@ -128,11 +128,29 @@ counties_df.head()
 # You should be able to answer the **question**: How many data points and features are in the original, provided dataset? (And how many points are left after dropping any incomplete rows?)
 
 # %%
+counties_df.shape
+
+# %%
+pd.set_option('display.max_columns', 500)
+
 # print out stats about data
+counties_df.describe().apply(lambda x: x.map("{:,.2f}".format))
 
+# %% [markdown]
+# Show dropped rows: [https://stackoverflow.com/q/34296292/2684954](https://stackoverflow.com/q/34296292/2684954)
+
+# %%
+df = counties_df
+dropped_rows = df[np.invert(df.index.isin(df.dropna().index))]
+dropped_rows
+
+# %%
 # drop any incomplete rows of data, and create a new df
-clean_counties_df = None
+clean_counties_df = counties_df.dropna(axis=0)
+clean_counties_df.describe().apply(lambda x: x.map("{:,.2f}".format))
 
+# %% [markdown]
+# **Answer**: There are 3220 data points and 36 features (excluding `CensusId`) in the original dataset. There are 3218 data points after dropping incomplete rows.
 
 # %% [markdown] {"nbpresent": {"id": "fdd10c00-53ba-405d-8622-fbfeac17d3bb"}}
 # ### EXERCISE: Create a new DataFrame, indexed by 'State-County'
@@ -157,13 +175,16 @@ clean_counties_df = None
 
 # %%
 # index data by 'State-County'
-# clean_counties_df.index= # your code here
+clean_counties_df.index= clean_counties_df["State"] + "-" + clean_counties_df["County"]
+
+# %%
+clean_counties_df.head()
 
 # %%
 # drop the old State and County columns, and the CensusId column
 # clean df should be modified or created anew
-clean_counties_df = None
-
+clean_counties_df = clean_counties_df.drop(["State", "County", "CensusId"], axis=1)
+clean_counties_df.head()
 
 # %% [markdown]
 # Now, what features do you have to work with?
@@ -202,9 +223,13 @@ for column_name in transport_list:
 #
 
 # %%
+features_list
+
+# %%
 # create a list of features that you want to compare or examine
-my_list = []
-n_bins = None # define n_bins
+my_list = ["Income", "IncomePerCap", "PrivateWork", "PublicWork", \
+           "SelfEmployed", "FamilyWork", "Unemployment"]
+n_bins = 30 # define n_bins
 
 # histogram creation code is similar to above
 for column_name in my_list:
@@ -223,8 +248,16 @@ for column_name in my_list:
 # %%
 # scale numerical features into a normalized range, 0-1
 # store them in this dataframe
-counties_scaled = None
+from sklearn.preprocessing import MinMaxScaler
 
+scaler = MinMaxScaler()
+df = clean_counties_df
+df[df.columns] = scaler.fit_transform(df[df.columns])
+counties_scaled = df
+counties_scaled.sample(5)
+
+# %%
+counties_scaled.describe()
 
 # %% [markdown]
 # ---
@@ -352,7 +385,7 @@ pca_SM.fit(formatted_train_data)
 # Get the name of the training job, it's suggested that you copy-paste
 # from the notebook or from a specific job in the AWS console
 
-training_job_name='<your_SageMaker_PCA_job_name_here>'
+training_job_name='pca-2019-07-02-08-53-22-444'
 
 # where the model is saved, by default
 model_key = os.path.join(prefix, training_job_name, 'output/model.tar.gz')
@@ -437,7 +470,6 @@ start_idx = N_COMPONENTS - n_principal_components  # 33-n
 # print a selection of s
 print(s.iloc[start_idx:, :])
 
-
 # %% [markdown]
 # ### EXERCISE: Calculate the explained variance
 #
@@ -454,6 +486,16 @@ print(s.iloc[start_idx:, :])
 # > Using this function, you should be able to answer the **question**: What is the smallest number of principal components that captures at least 80% of the total variance in the dataset?
 
 # %%
+# looking at top 5 components
+n_principal_components = 5
+
+start_idx = N_COMPONENTS - n_principal_components  # 33-n
+
+# print a selection of s
+print(s.iloc[start_idx:, :])
+
+
+# %%
 # Calculate the explained variance for the top n principal components
 # you may assume you have access to the global var N_COMPONENTS
 def explained_variance(s, n_top_components):
@@ -464,8 +506,11 @@ def explained_variance(s, n_top_components):
        :return: The expected data variance covered by the n_top_components.'''
     
     # your code here
+    start_idx = len(s) - n_top_components
+    n_top_variance = np.square(s.iloc[start_idx:, :]).sum()
+    total_variance = np.square(s).sum()
     
-    pass
+    return float(n_top_variance / total_variance)
 
 
 
@@ -581,16 +626,23 @@ print(train_pca[data_idx])
 def create_transformed_df(train_pca, counties_scaled, n_top_components):
     ''' Return a dataframe of data points with component features. 
         The dataframe should be indexed by State-County and contain component values.
-        :param train_pca: A list of pca training data, returned by a PCA model.
+        :param train_pca: A list of pca training data, returned by a PCA model
         :param counties_scaled: A dataframe of normalized, original features.
         :param n_top_components: An integer, the number of top components to use.
-        :return: A dataframe, indexed by State-County, with n_top_component values as columns.        
+        :return: A dataframe, indexed by State-County, with n_top_component values as columns.
      '''
     # create a dataframe of component features, indexed by State-County
     
     # your code here
+    transformed_df = pd.DataFrame()
+        
+    for data in train_pca:
+        components = data.label["projection"].float32_tensor.values[-n_top_components:][::-1] # get the last n_top_components and reverse the list
+        transformed_df = transformed_df.append([list(components)])
     
-    pass
+    transformed_df.index = counties_scaled.index
+    
+    return transformed_df
 
 
 
@@ -605,13 +657,13 @@ def create_transformed_df(train_pca, counties_scaled, n_top_components):
 
 # %%
 ## Specify top n
-top_n = None
+top_n = 7
 
 # call your function and create a new dataframe
 counties_transformed = create_transformed_df(train_pca, counties_scaled, n_top_components=top_n)
 
 ## TODO: Add descriptive column names
-
+counties_transformed.columns = ["c_1", "c_2", "c_3", "c_4", "c_5", "c_6", "c_7"]
 
 # print result
 counties_transformed.head()
@@ -654,7 +706,13 @@ session.delete_endpoint(pca_predictor.endpoint)
 
 # %%
 # define a KMeans estimator
+from sagemaker import KMeans
 
+kmeans_estimator = KMeans(role=role,
+                          train_instance_count=1,
+                          train_instance_type="ml.c4.xlarge",
+                          k=8, # number of clusters to produce
+                          init_method="random")
 
 # %% [markdown]
 # ### EXERCISE: Create formatted, k-means training data
@@ -663,7 +721,8 @@ session.delete_endpoint(pca_predictor.endpoint)
 
 # %%
 # convert the transformed dataframe into record_set data
-
+train_data_np = counties_transformed.values.astype('float32')
+formatted_train_data = kmeans_estimator.record_set(train_data_np)
 
 # %% [markdown]
 # ### EXERCISE: Train the k-means model
@@ -673,7 +732,7 @@ session.delete_endpoint(pca_predictor.endpoint)
 # %%
 # %%time
 # train kmeans
-
+kmeans_estimator.fit(formatted_train_data)
 
 # %% [markdown]
 # ### EXERCISE: Deploy the k-means model
@@ -684,7 +743,8 @@ session.delete_endpoint(pca_predictor.endpoint)
 # %%
 # %%time
 # deploy the model to create a predictor
-kmeans_predictor = None
+kmeans_predictor = kmeans_estimator.deploy(initial_instance_count=1, 
+                                           instance_type='ml.t2.medium')
 
 # %% [markdown]
 # ### EXERCISE: Pass in the training data and assign predicted cluster labels
@@ -693,7 +753,7 @@ kmeans_predictor = None
 
 # %%
 # get the predicted clusters for all the kmeans training data
-cluster_info=None
+cluster_info=kmeans_predictor.predict(train_data_np)
 
 # %% [markdown]
 # ## Exploring the resultant clusters
@@ -753,11 +813,22 @@ session.delete_endpoint(kmeans_predictor.endpoint)
 # %%
 # download and unzip the kmeans model file
 # use the name model_algo-1
+training_job_name='kmeans-2019-07-02-09-31-46-317'
 
+# where the model is saved, by default
+model_key = os.path.join(training_job_name, 'output/model.tar.gz')
+print(model_key)
+
+# download and unzip model
+boto3.resource('s3').Bucket(bucket_name).download_file(model_key, 'model.tar.gz')
+
+# unzipping as model_algo-1
+os.system('tar -zxvf model.tar.gz')
+os.system('unzip model_algo-1')
 
 # %%
 # get the trained kmeans params using mxnet
-kmeans_model_params = None
+kmeans_model_params = mx.ndarray.load('model_algo-1')
 
 print(kmeans_model_params)
 
