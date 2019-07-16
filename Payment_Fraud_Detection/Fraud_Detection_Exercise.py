@@ -115,8 +115,7 @@ def fraudulent_percentage(transaction_df):
     '''
     
     # your code here
-    
-    pass
+    return transaction_df[transaction_df["Class"] == 1].shape[0] / transaction_df.shape[0]
 
 
 
@@ -152,13 +151,18 @@ def train_test_split(transaction_df, train_frac= 0.7, seed=1):
        :param train_frac: The decimal fraction of data that should be training data
        :param seed: Random seed for shuffling and reproducibility, default = 1
        :return: Two tuples (in order): (train_features, train_labels), (test_features, test_labels)
-       '''
+       '''   
+    
+    df = transaction_df.values
+    np.random.seed(seed)
+    np.random.shuffle(df)
+    train_size = int(df.shape[0] * train_frac)
     
     # shuffle and split the data
-    train_features = None
-    train_labels = None
-    test_features = None
-    test_labels = None
+    train_features = df[:train_size, :-1]
+    train_labels = df[:train_size, -1]
+    test_features = df[train_size:, :-1]
+    test_labels = df[train_size:, -1]
     
     return (train_features, train_labels), (test_features, test_labels)
 
@@ -225,8 +229,19 @@ print('Tests passed!')
 # import LinearLearner
 from sagemaker import LinearLearner
 
-# instantiate LinearLearner
+# specify an output path
+prefix = "creditcard"
+output_path = f"s3://{bucket}/{prefix}"
 
+# instantiate LinearLearner
+linear_learner = LinearLearner(role=role,
+                               sagemaker_session=sagemaker_session,
+                               output_path=output_path,
+                               train_instance_count=1,
+                               train_instance_type="ml.c4.xlarge",
+                               predictor_type="binary_classifier",
+                               binary_classifier_model_selection_criteria="f1"
+                               )
 
 # %% [markdown]
 # ### EXERCISE: Convert data into a RecordSet format
@@ -235,7 +250,7 @@ from sagemaker import LinearLearner
 
 # %%
 # create RecordSet of training data
-formatted_train_data = None
+formatted_train_data = linear_learner.record_set(train=train_features.astype("float32"), labels=train_labels.astype("float32"))
 
 # %% [markdown]
 # ### EXERCISE: Train the Estimator
@@ -245,7 +260,7 @@ formatted_train_data = None
 # %%
 # %%time 
 # train the estimator on formatted training data
-
+linear_learner.fit(formatted_train_data)
 
 # %% [markdown]
 # ### EXERCISE: Deploy the trained model
@@ -255,7 +270,7 @@ formatted_train_data = None
 # %%
 # %%time 
 # deploy and create a predictor
-linear_predictor = None
+linear_predictor = linear_learner.deploy(instance_type="ml.t2.medium", initial_instance_count=1)
 
 # %% [markdown]
 # ---
@@ -479,7 +494,16 @@ delete_endpoint(recall_predictor)
 
 # include params for tuning for higher recall
 # *and* account for class imbalance in training data
-linear_balanced = None
+linear_balanced = LinearLearner(role=role,
+                                train_instance_count=1, 
+                                train_instance_type='ml.c4.xlarge',
+                                predictor_type='binary_classifier',
+                                output_path=output_path,
+                                sagemaker_session=sagemaker_session,
+                                epochs=15,
+                                binary_classifier_model_selection_criteria='precision_at_target_recall', # target recall
+                                target_recall=0.9, # 90% recall
+                                positive_example_weight_mult='balanced')
 
 
 # %% [markdown]
@@ -490,7 +514,7 @@ linear_balanced = None
 # %%
 # %%time 
 # train the estimator on formatted training data
-
+linear_balanced.fit(formatted_train_data)
 
 # %% [markdown]
 # ### EXERCISE: Deploy and evaluate the balanced estimator
@@ -500,7 +524,7 @@ linear_balanced = None
 # %%
 # %%time 
 # deploy and create a predictor
-balanced_predictor = None
+balanced_predictor = linear_balanced.deploy(initial_instance_count=1, instance_type='ml.t2.medium')
 
 # %%
 print('Metrics for balanced, LinearLearner.\n')
@@ -548,17 +572,43 @@ delete_endpoint(balanced_predictor)
 
 # include params for tuning for higher precision
 # *and* account for class imbalance in training data
+linear_precision = LinearLearner(role=role,
+                                 train_instance_count=1, 
+                                 train_instance_type='ml.c4.xlarge',
+                                 predictor_type='binary_classifier',
+                                 output_path=output_path,
+                                 sagemaker_session=sagemaker_session,
+                                 epochs=15,
+                                 binary_classifier_model_selection_criteria='recall_at_target_precision', # target precision
+                                 target_precision=0.9, # 90% precision
+                                 positive_example_weight_mult='balanced')
 
+linear_precision.fit(formatted_train_data)
 
 # %%
 # %%time 
 # deploy and evaluate a predictor
+linear_precision.deploy(initial_instance_count=1, instance_type='ml.t2.medium')
 
+# %%
+precision_predictor = sagemaker.predictor.RealTimePredictor(endpoint="linear-learner-2019-07-16-02-55-40-401",
+                                                            sagemaker_session=sagemaker_session,
+                                                            serializer=sagemaker.amazon.common.numpy_to_record_serializer(),
+                                                            deserializer=sagemaker.amazon.common.record_deserializer())
+
+# %%
+print('Metrics for LinearLearner trained for a target precision at 90%.\n')
+
+# get metrics for predictor for a target precision at 90%
+metrics = evaluate(precision_predictor, 
+                   test_features.astype('float32'), 
+                   test_labels, 
+                   verbose=True)
 
 # %%
 ## IMPORTANT
 # delete the predictor endpoint after evaluation 
-
+delete_endpoint(linear_precision)
 
 # %% [markdown]
 # ## Final Cleanup!
