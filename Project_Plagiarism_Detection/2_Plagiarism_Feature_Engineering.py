@@ -5,8 +5,8 @@
 #     text_representation:
 #       extension: .py
 #       format_name: percent
-#       format_version: '1.2'
-#       jupytext_version: 1.1.1
+#       format_version: '1.3'
+#       jupytext_version: 1.3.1
 #   kernelspec:
 #     display_name: Python 3
 #     language: python
@@ -146,11 +146,31 @@ def numerical_dataframe(csv_file='data/file_information.csv'):
        :param csv_file: The directory for the file_information.csv file
        :return: A dataframe with numerical categories and a new `Class` label column'''
     
-    # your code here
+    category_map = {
+        "non": 0,
+        "heavy": 1,
+        "light": 2,
+        "cut": 3,
+        "orig": -1
+    }
+    class_map = {
+        "non": 0,
+        "heavy": 1,
+        "light": 1,
+        "cut": 1,
+        "orig": -1
+    }
     
-    pass
+    df = pd.read_csv(csv_file)
+    df["Category"] = df["Category"].map(category_map)
+    df["Class"] = np.where(df["Category"] > 1, 1, df["Category"])
+    
+    return df
 
 
+
+# %%
+numerical_dataframe().head()
 
 # %% [markdown]
 # ### Test cells
@@ -256,7 +276,6 @@ complete_df = helpers.train_test_dataframe(text_df, random_seed=random_seed)
 # check results
 complete_df.head(10)
 
-
 # %% [markdown]
 # # Determining Plagiarism
 #
@@ -314,6 +333,8 @@ complete_df.head(10)
 # You are encouraged to write any helper functions that you need to complete the function below.
 
 # %%
+from sklearn.feature_extraction.text import CountVectorizer
+
 # Calculate the ngram containment for one answer file/source file pair in a df
 def calculate_containment(df, n, answer_filename):
     '''Calculates the containment between a given answer text and its associated source text.
@@ -327,11 +348,16 @@ def calculate_containment(df, n, answer_filename):
        :return: A single containment value that represents the similarity
            between an answer text and its source text.
     '''
-    
-    # your code here
-    
-    pass
 
+    counts = CountVectorizer(analyzer="word", ngram_range=(n,n))
+    
+    answer = df.loc[df["File"] == answer_filename].iloc[0]
+    source_filename = f"orig_task{answer['Task']}.txt"
+    source = df.loc[df["File"] == source_filename].iloc[0]
+    
+    ngrams = counts.fit_transform([answer["Text"], source["Text"]])
+    ngram_array = ngrams.toarray()
+    return np.sum(np.minimum(ngram_array[0], ngram_array[1])) / np.sum(ngram_array[0])
 
 
 # %% [markdown]
@@ -350,7 +376,7 @@ def calculate_containment(df, n, answer_filename):
 n = 3
 
 # indices for first few files
-test_indices = range(5)
+test_indices = range(4)
 
 # iterate through files and calculate containment
 category_vals = []
@@ -382,8 +408,7 @@ tests.test_containment(complete_df, calculate_containment)
 # ### QUESTION 1: Why can we calculate containment features across *all* data (training & test), prior to splitting the DataFrame for modeling? That is, what about the containment calculation means that the test and training data do not influence each other?
 
 # %% [markdown]
-# **Answer:**
-#
+# **Answer:** Calculating containment is a part of data preprocessing and feature engineering, and it is the same logic applied to every data point, so there is no problem of training and test data influencing each other. We have to perform it before splitting the dataframe for modeling, as the features are needed for model input.
 
 # %% [markdown]
 # ---
@@ -476,10 +501,22 @@ def lcs_norm_word(answer_text, source_text):
        :param source_text: The pre-processed text for an answer's associated source text
        :return: A normalized LCS value'''
     
-    # your code here
+    answer_words = answer_text.split()
+    source_words = source_text.split()
+    lcs_matrix = np.empty([len(answer_words)+1, len(source_words)+1])
     
-    pass
+    # set first row and column to 0
+    lcs_matrix[0,:] = 0
+    lcs_matrix[:,0] = 0
 
+    for a, answer_word in enumerate(answer_words, 1):
+        for s, source_word in enumerate(source_words, 1):
+            if answer_word == source_word:
+                lcs_matrix[a][s] = lcs_matrix[a-1][s-1] + 1
+            else:
+                lcs_matrix[a][s] = max(lcs_matrix[a][s-1], lcs_matrix[a-1][s])
+    
+    return lcs_matrix[-1][-1] / len(answer_words)
 
 
 # %% [markdown]
@@ -644,7 +681,7 @@ def create_lcs_features(df, column_name='lcs_word'):
 
 # %%
 # Define an ngram range
-ngram_range = range(1,7)
+ngram_range = range(1,8)
 
 
 # The following code may take a minute to run, depending on your ngram_range
@@ -679,7 +716,7 @@ print()
 
 # %%
 # print some results 
-features_df.head(10)
+features_df.sample(10)
 
 # %% [markdown]
 # ## Correlated Features
@@ -730,14 +767,16 @@ def train_test_data(complete_df, features_df, selected_features):
        :param selected_features: An array of selected features that correspond to certain columns in `features_df`
        :return: training and test features and labels: (train_x, train_y), (test_x, test_y)'''
     
+    df = pd.concat([complete_df, features_df], axis=1)
+    
     # get the training features
-    train_x = None
+    train_x = df[complete_df["Datatype"] == "train"][selected_features].values
     # And training class labels (0 or 1)
-    train_y = None
+    train_y = complete_df[complete_df["Datatype"] == "train"]["Class"].to_numpy()
     
     # get the test features and labels
-    test_x = None
-    test_y = None
+    test_x = df[complete_df["Datatype"] == "test"][selected_features].values
+    test_y = complete_df[complete_df["Datatype"] == "test"]["Class"].to_numpy()
     
     return (train_x, train_y), (test_x, test_y)
     
@@ -769,7 +808,7 @@ tests.test_data_split(train_x, train_y, test_x, test_y)
 # %%
 # Select your list of features, this should be column names from features_df
 # ex. ['c_1', 'lcs_word']
-selected_features = ['c_1', 'c_5', 'lcs_word']
+selected_features = ['c_1', 'c_2', 'c_5', 'lcs_word']
 
 
 """
@@ -790,8 +829,7 @@ print('Training df sample: \n', train_x[:10])
 # ### Question 2: How did you decide on which features to include in your final model? 
 
 # %% [markdown]
-# **Answer:**
-#
+# **Answer:** I did not include all `c_1` through `c_7` as they are highly correlated. It is good to have a good mix of features, such as exact words (`c_1`), short phrases (`c_2`) and long phrases (`c_5`). `lcs_words` is a separate useful feature to detect minor changes and paraphrasing, so I included it as well.
 
 # %% [markdown]
 # ---
@@ -824,7 +862,7 @@ def make_csv(x, y, filename, data_dir):
         os.makedirs(data_dir)
     
     
-    # your code here
+    pd.concat([pd.DataFrame(y), pd.DataFrame(x)], axis=1).dropna().to_csv(os.path.join(data_dir, filename), header=False, index=False)
     
     
     # nothing is returned, but a print statement indicates that the function has run
