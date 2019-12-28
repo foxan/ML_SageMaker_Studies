@@ -5,8 +5,8 @@
 #     text_representation:
 #       extension: .py
 #       format_name: percent
-#       format_version: '1.2'
-#       jupytext_version: 1.1.1
+#       format_version: '1.3'
+#       jupytext_version: 1.3.1
 #   kernelspec:
 #     display_name: Python 3
 #     language: python
@@ -42,6 +42,8 @@
 # Save your train and test `.csv` feature files, locally. To do this you can run the second notebook "2_Plagiarism_Feature_Engineering" in SageMaker or you can manually upload your files to this notebook using the upload icon in Jupyter Lab. Then you can upload local files to S3 by using `sagemaker_session.upload_data` and pointing directly to where the training data is saved.
 
 # %%
+import os
+import numpy as np
 import pandas as pd
 import boto3
 import sagemaker
@@ -66,13 +68,13 @@ bucket = sagemaker_session.default_bucket()
 
 # %%
 # should be the name of directory you created to save your features data
-data_dir = None
+data_dir = 'plagiarism_data/'
 
 # set prefix, a descriptive name for a directory  
-prefix = None
+prefix = 'plagiarism_detection'
 
 # upload all data to S3
-
+sagemaker_session.upload_data(data_dir, bucket=bucket, key_prefix=prefix)
 
 # %% [markdown]
 # ### Test cell
@@ -187,9 +189,31 @@ print('Test passed!')
 # %%
 # %%time
 
+
 # Train your estimator on S3 training data
+xgb_container = sagemaker.amazon.amazon_estimator.get_image_uri(sagemaker_session.boto_region_name, 'xgboost')
 
+xgb = sagemaker.estimator.Estimator(xgb_container, # The name of the training container
+                                    role, # The IAM role to use (our current role in this case)
+                                    train_instance_count=1, # The number of instances to use for training
+                                    train_instance_type='ml.m4.xlarge', # The type of instance ot use for training
+                                    output_path='s3://{}/{}/output'.format(sagemaker_session.default_bucket(), prefix), # Where to save the output (the model artifacts)
+                                    sagemaker_session=sagemaker_session) # The current SageMaker session
 
+xgb.set_hyperparameters(max_depth=5,
+                        eta=0.2,
+                        gamma=4,
+                        min_child_weight=6,
+                        subsample=0.8,
+                        objective='reg:linear',
+                        early_stopping_rounds=10,
+                        num_round=200)
+
+s3_dir = 's3://sagemaker-us-east-1-839762460060/plagiarism_detection'
+s3_input_train = sagemaker.s3_input(s3_data=os.path.join(s3_dir, 'train.csv'), content_type='text/csv')
+s3_input_validation = sagemaker.s3_input(s3_data=os.path.join(s3_dir, 'test.csv'), content_type='text/csv')
+
+xgb.fit({'train': s3_input_train, 'validation': s3_input_validation})
 
 # %% [markdown]
 # ## EXERCISE: Deploy the trained model
@@ -210,7 +234,7 @@ print('Test passed!')
 
 
 # deploy your model to create a predictor
-predictor = None
+predictor = xgb.deploy(initial_instance_count=1, instance_type='ml.m4.xlarge')
 
 
 # %% [markdown]
@@ -243,7 +267,19 @@ test_x = test_data.iloc[:,1:]
 
 # %%
 # First: generate predicted, class labels
-test_y_preds = None
+from sagemaker.predictor import csv_serializer
+
+# tell the endpoint what format the data we are sending is in
+predictor.content_type = 'text/csv'
+predictor.serializer = csv_serializer
+
+test_y_preds = predictor.predict(test_x.values)
+
+# predictions is currently a comma delimited string and so need to convert it to a numpy array
+test_y_preds = np.fromstring(test_y_preds, sep=',')
+
+# mark as plagiarised if prediction is > 0.5
+test_y_preds = np.where(test_y_preds > 0.5, 1, 0)
 
 
 """
@@ -255,7 +291,9 @@ print('Test passed!')
 
 # %%
 # Second: calculate the test accuracy
-accuracy = None
+from sklearn.metrics import accuracy_score
+
+accuracy = accuracy_score(test_y, test_y_preds)
 
 print(accuracy)
 
@@ -270,15 +308,13 @@ print(test_y.values)
 # ### Question 1: How many false positives and false negatives did your model produce, if any? And why do you think this is?
 
 # %% [markdown]
-# ** Answer**: 
-#
+# **Answer**: The `xgboost` model predicts all the test results correctly and makes no false positives or false negatives. I am amazed that `xgboost` performs so well out of the box. I think it is because the algorithm has a lot of built-in features, such as L1 (Lasso Regression) and L2 (Ridge Regression) regularization, which prevents the model from overfitting.
 
 # %% [markdown]
 # ### Question 2: How did you decide on the type of model to use? 
 
 # %% [markdown]
-# ** Answer**:
-#
+# **Answer**: `xgboost` performs pretty well for many supervised machine learning problems, and it does not require a lot of hyperparameter tuning. It also has a lot of useful in-built features, such as regularization, cross-validation, handling missing value, etc. It gives a perfect prediction with default hyperparameters, so I do not think there is a need to choose other models.
 #
 
 # %% [markdown]
@@ -289,7 +325,11 @@ print(test_y.values)
 
 # %%
 # uncomment and fill in the line below!
-# <name_of_deployed_predictor>.delete_endpoint()
+predictor.delete_endpoint()
+
+# %%
+# delete again to show that there is no more endpoint
+predictor.delete_endpoint()
 
 
 # %% [markdown]
@@ -300,8 +340,8 @@ print(test_y.values)
 # %%
 # deleting bucket, uncomment lines below
 
-# bucket_to_delete = boto3.resource('s3').Bucket(bucket)
-# bucket_to_delete.objects.all().delete()
+bucket_to_delete = boto3.resource('s3').Bucket(bucket)
+bucket_to_delete.objects.all().delete()
 
 # %% [markdown]
 # ### Deleting all your models and instances
